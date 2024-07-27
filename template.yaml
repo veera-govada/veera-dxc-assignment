@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  ExerciseLambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: 
+          - Effect: 'Allow'
+            Principal: 
+              Service: 
+                - 'lambda.amazonaws.com'
+            Action: 
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'ExerciseLambdaPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'ssm:GetParameter'
+                  - 's3:PutObject'
+                Resource: 
+                  - 'arn:aws:ssm:*:*:parameter/UserName'
+                  - 'arn:aws:s3:::veera-dxc-home-assignment/*'
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  ExerciseLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: 'lambda_handler'
+      Role: 'arn:aws:iam::010526262753:role/service-role/exercise-lambda-role-3njd99zc'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import urllib3
+
+          ssm = boto3.client('ssm')
+          s3 = boto3.client('s3')
+          http = urllib3.PoolManager()
+
+          def lambda_handler(event, context):
+              response_data = {}
+              try:
+                  if event['RequestType'] in ['Create', 'Update']:
+                      # Retrieve SSM parameter
+                      parameter_name = os.environ['SSM_PARAMETER_NAME']
+                      parameter = ssm.get_parameter(Name=parameter_name, WithDecryption=True)
+                      parameter_value = parameter['Parameter']['Value']
+                      
+                      # Store the parameter in S3
+                      bucket_name = os.environ['S3_BUCKET_NAME']
+                      file_key = 'ssm_parameter.txt'
+                      s3.put_object(Bucket=bucket_name, Key=file_key, Body=parameter_value)
+                      
+                      response_data['Message'] = 'Parameter stored in S3 successfully'
+                  
+                  elif event['RequestType'] == 'Delete':
+                      # Handle delete event (if needed)
+                      response_data['Message'] = 'Delete request received'
+                  
+                  send_response(event, context, 'SUCCESS', response_data)
+              except Exception as e:
+                  print(e)
+                  response_data['Message'] = str(e)
+                  send_response(event, context, 'FAILED', response_data)
+
+          def send_response(event, context, status, response_data):
+              response_url = event['ResponseURL']
+              
+              response_body = {
+                  'Status': status,
+                  'Reason': 'See the details in CloudWatch Log Stream: ' + context.log_stream_name,
+                  'PhysicalResourceId': context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': response_data
+              }
+              
+              json_response_body = json.dumps(response_body)
+              
+              headers = {
+                  'content-type': '',
+                  'content-length': str(len(json_response_body))
+              }
+              
+              try:
+                  response = http.request('PUT', response_url, body=json_response_body, headers=headers)
+                  print('Status code:', response.status)
+              except Exception as e:
+                  print('send_response failed:', e)
+      Runtime: 'python3.12'
+      Timeout: 60
+      Environment:
+        Variables:
+          SSM_PARAMETER_NAME: 'UserName'
+          S3_BUCKET_NAME: 'veera-dxc-home-assignment'
